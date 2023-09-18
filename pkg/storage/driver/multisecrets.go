@@ -46,6 +46,21 @@ import (
 	rspb "helm.sh/helm/v3/pkg/release"
 )
 
+// multiSecretContextKey is defined instead of the built-in string type to avoid collisions.
+type multiSecretContextKey string
+
+var multiSecretContextNamespace = multiSecretContextKey("namespace")
+
+// GetNamespaceFromContext gets the namespace value from the context.
+func GetNamespaceFromContext(ctx context.Context) (string, bool) {
+	if v := ctx.Value(multiSecretContextNamespace); v != nil {
+		if namespace, ok := v.(string); ok {
+			return namespace, ok
+		}
+	}
+	return "", false
+}
+
 var _ Driver = (*MultiSecrets)(nil)
 
 // MultiSecretsDriverName is the string name of the driver.
@@ -139,7 +154,6 @@ func (secrets *MultiSecrets) List(filter func(*rspb.Release) bool) ([]*rspb.Rele
 // Query fetches all releases that match the provided map of labels.
 // An error is returned if the secret fails to retrieve the releases.
 func (secrets *MultiSecrets) Query(labels map[string]string) ([]*rspb.Release, error) {
-	const firstchunk = 1
 	ls := kblabels.Set{}
 	for k, v := range labels {
 		if errs := validation.IsValidLabelValue(v); len(errs) != 0 {
@@ -350,7 +364,7 @@ func newMultiSecretsObject(key string, rls *rspb.Release, lbs labels, chunkSizeE
 					Data: map[string][]byte{"release": []byte(str), "chunk": []byte(fmt.Sprintf("%d", i)), "chunks": []byte(fmt.Sprintf("%d", len(slices)))},
 				})
 			}
-			i += 1
+			i++
 		}
 	} else {
 		// No chunking required, create 100% BWC Secret
@@ -369,18 +383,21 @@ func newMultiSecretsObject(key string, rls *rspb.Release, lbs labels, chunkSizeE
 // Load remaining chunks given a key and 1st release Secret
 func loadRemainingChunks(obj *v1.Secret, multiSecretImpl *MultiSecrets) ([]byte, error) {
 	chunks, _ := strconv.Atoi(string(obj.Data["chunks"]))
+	releaseData := make([]byte, 0, len(obj.Data["release"])*chunks)
+	releaseData = append(releaseData, obj.Data["release"]...)
 	for chunk := 2; chunk <= chunks; chunk++ {
 		key := fmt.Sprintf("%s.%d", obj.ObjectMeta.Name, chunk)
-		chunkobj, err := multiSecretImpl.impl.Get(context.Background(), key, metav1.GetOptions{})
+		ctx := context.WithValue(context.Background(), multiSecretContextNamespace, obj.Namespace)
+		chunkobj, err := multiSecretImpl.impl.Get(ctx, key, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil, ErrReleaseNotFound
 			}
 			return nil, errors.Wrapf(err, "get: failed to get %q", key)
 		}
-		obj.Data["release"] = append(obj.Data["release"], chunkobj.Data["release"]...)
+		releaseData = append(releaseData, chunkobj.Data["release"]...)
 	}
-	return obj.Data["release"], nil
+	return releaseData, nil
 }
 
 // Determine the chunk size to use

@@ -27,6 +27,8 @@ import (
 	applycorev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/kubernetes"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+
+	"helm.sh/helm/v3/pkg/storage/driver"
 )
 
 // lazyClient is a workaround to deal with Kubernetes having an unstable client API.
@@ -93,7 +95,11 @@ func (s *multiSecretClient) Get(ctx context.Context, name string, opts metav1.Ge
 	if err := s.init(); err != nil {
 		return nil, err
 	}
-	return s.client.CoreV1().Secrets(s.namespace).Get(ctx, name, opts)
+	namespace := s.namespace
+	if v, ok := driver.GetNamespaceFromContext(ctx); ok {
+		namespace = v
+	}
+	return s.client.CoreV1().Secrets(namespace).Get(ctx, name, opts)
 }
 
 func (s *multiSecretClient) List(ctx context.Context, opts metav1.ListOptions) (*v1.SecretList, error) {
